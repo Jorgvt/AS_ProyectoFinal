@@ -1,0 +1,86 @@
+---
+title: "Pruebas Iniciales"
+author: "Jorge Vila Tomás"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    number_sections: yes
+  pdf_document:
+    number_sections: yes
+header-includes:
+  - \usepackage[explicit]{titlesec}
+  - \titleformat{\section}{\normalfont\Large\bfseries}{}{0em}{\thesection. {#1}\ }
+subparagraph: yes
+---
+
+```{css, echo=FALSE}
+.header-section-number::after {
+  content: ".";
+}
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# MNIST
+
+Hay un par de librerías que te permiten obtener el dataset MNIST de forma bastante cómoda, `snedata` y `mnist`. La segunda da los datos de forma un poco más práctica, así que vamos a ir con esa primero. Nos carga directamente una variable al workspace que es una lista de dos elementos: `train` y `test`. Cada uno de estos es a su vez una lista con `x`, las imágenes *alargadas*, e `y`, las etiquetas que corresponden a cada imagen.
+
+```{r}
+library(mnist)
+
+data(mnist)
+```
+
+```{r}
+hist(mnist$train$x[1,])
+for (n in seq_len(100)){
+  # if (mnist$train$y)
+  # color <- 
+  n<-runif(n=1, min=1, max=60000)
+  hist(mnist$train$x[n,], add=TRUE, freq=FALSE, col=mnist$train$y[n], labels = mnist$train$y[n])
+}
+```
+
+```{r}
+mask_0 <- mnist$train$y == 0
+mask_8 <- mnist$train$y == 8
+
+for (n in seq_len(dim(mnist$train$x[mask_0,])[1])){
+  if (n==1){
+    hist(mnist$train$x[n,], col=rgb(0,0,1,1/4), freq=TRUE)  
+  }
+  else {
+    hist(mnist$train$x[n,], col=rgb(0,0,1,1/4), add=TRUE, freq=TRUE)
+  }
+  # break
+}
+
+for (n in seq_len(dim(mnist$train$x[mask_8,])[1])){
+  if (n==1){
+    hist(mnist$train$x[n,], col=rgb(1,0,0,1/4), add=TRUE, freq=TRUE)  
+  }
+  else {
+    hist(mnist$train$x[n,], col=rgb(1,0,0,1/4), add=TRUE, freq=TRUE)
+  }
+  # break
+}
+```
+
+```{r}
+library(EBImage)
+```
+
+```{r}
+talks <- readImage("talks.png")
+
+fhi = matrix(1, nrow = 3, ncol = 3)
+fhi[2, 2] = -8
+fhi
+
+talks_fhi = filter2(talks, fhi)
+```
+
+
+
