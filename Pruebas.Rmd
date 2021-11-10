@@ -300,10 +300,10 @@ data(mnist)
 Como tarda mucho, vamos a coger unos 1000 ejemplos de train y 250 de test para probar.
 
 ```{r}
-train_size <- 10000
-test_size <- 1000
+train_size <- 60000
+test_size <- 10000
 
-mnist.train.images <- array(unlist(mnist$train$x), dim = c(10000,28,28))
+mnist.train.images <- array(unlist(mnist$train$x), dim = c(60000,28,28))
 mnist.test.images <- array(unlist(mnist$test$x), dim = c(10000,28,28))
 
 # time_i <- Sys.time()
