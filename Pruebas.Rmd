@@ -82,5 +82,251 @@ fhi
 talks_fhi = filter2(talks, fhi)
 ```
 
+## Median filtering
 
+```{r}
+plot(talks)
+plot(medianFilter(talks, size=3))
+```
+
+## Binarization
+
+Con la función `thresh`:
+
+```{r}
+plot(thresh(talks, w=22, h=24))
+```
+
+Con la función `otsu`:
+
+```{r}
+threshold <- otsu(talks)
+talks@.Data <- as.matrix(talks@.Data >= threshold)
+plot(talks)
+```
+
+
+## Banco de filtros Gabor
+
+```{r}
+library(OpenImageR)
+```
+
+```{r}
+init_gb = GaborFeatureExtract$new()
+
+gb_f = init_gb$gabor_filter_bank(scales = 3, orientations = 6, gabor_rows = 19,
+                                 gabor_columns = 19, plot_data = TRUE)
+
+plt_f = init_gb$plot_gabor(real_matrices = gb_f$gabor_real, margin_btw_plots = 0.65,
+                           thresholding = FALSE)
+```
+
+```{r}
+gb_im = init_gb$gabor_feature_extraction(image = t(talks@.Data), scales = 3, orientations = 6,
+                                         downsample_gabor = FALSE, downsample_rows = NULL,
+                                          downsample_cols = NULL, gabor_rows = 19, 
+                                          gabor_columns = 19, plot_data = TRUE, 
+                                          normalize_features = FALSE, threads = 3)
+
+plt_im = init_gb$plot_gabor(real_matrices = gb_im$gabor_features_real,
+                            margin_btw_plots = 0.65, thresholding = FALSE)
+```
+
+```{r}
+plt_im_thresh = init_gb$plot_gabor(real_matrices = gb_im$gabor_features_real,
+                                   margin_btw_plots = 0.65, thresholding = TRUE)
+```
+
+## Para cada output:
+
+a) Media amplitud
+b) Varianza amplitud
+c) Media fase
+d) Varianza fase
+
+```{r}
+lista_prueba <- list(array(1:24, dim=c(2,3,4)),
+                     array(1:24, dim=c(2,3,4))+24,
+                     array(1:24, dim=c(2,3,4))+48)
+array_prueba <- array(as.numeric(unlist(lista_prueba)), dim=c(2,3,12))
+```
+
+```{r}
+cuac_real <- array(as.numeric(unlist(gb_im$gabor_features_real)), dim=c(50, 203, 18))
+cuac_imaginary <- array(as.numeric(unlist(gb_im$gabor_features_imaginary)), dim=c(50, 203, 18))
+cuac_complex <- array(complex(real = cuac_real, imaginary = cuac_imaginary), dim=c(50,203,18))
+amps <- Mod(cuac_complex)
+phases <- Arg(cuac_complex)
+
+## Ahora hacemos las medias y desviaciones de cada canal
+amps_mean_vec <- apply(amps, mean, MARGIN = 3)
+amps_sd_vec <- apply(amps, sd, MARGIN = 3)
+phases_mean_vec <- apply(phases, mean, MARGIN = 3)
+phases_sd_vec <- apply(phases, sd, MARGIN = 3)
+
+total_feature_vector <- c(amps_mean_vec, amps_sd_vec, phases_mean_vec, phases_sd_vec)
+```
+
+```{r}
+barplot(amps_mean_vec, main = "Medias amplitudes")
+barplot(amps_sd_vec, main = "Desviacion Típica Amplitudes")
+barplot(phases_mean_vec, main = "Medias fases")
+barplot(phases_sd_vec, main = "Desviación Típica Fases")
+
+barplot(total_feature_vector, main = "Todos los vectores juntos")
+```
+
+
+# Wavelets
+
+```{r}
+library(waveslim)
+```
+
+```{r}
+p <- dwt.2d(flipImage(talks@.Data, mode = 'horizontal'), 'd4', J=1)
+image(p$LH1, main = "LH")
+image(p$HH1, main = "HH")
+image(p$HL1, main = "HL")
+image(p$LL1, main = "LL")
+```
+
+Calcular la desviación estándar de cada imagen chiquita de cada filtro (esto lo hacemos porque es lo que hacen en el paper que nos puso Fernandito):
+
+```{r}
+sapply(p, sd)
+```
+
+## De todos los canales a la vez
+
+```{r}
+## Ahora hacemos las medias y desviaciones de cada canal
+patata <- apply(cuac_real, dwt.2d, wf = 'd4', J = 1, MARGIN = 3)
+
+## Como lo de arriba nos devuelve una lista de listas de cuatro cosas, etc.
+## Lo más agradable es volver a ponerlo como un array de las dimensiones que toca.
+patata2 <- array(as.numeric(unlist(patata)), dim=c(25, 101, 4*18))
+
+## Ahora ya se puede calcular fácilmente la desviación estándar por canal igual que hacíamos antes
+sds_wavelets <- apply(patata2, FUN = sd, MARGIN = 3)
+
+## Lo podemos pintar también si nos hace ilusión
+barplot(sds_wavelets, main = "Desviación Estándar por canal (Gabor + Wavelet)")
+```
+
+# Ahora todo de golpe
+
+Ahora la idea es hacer una función a la que le podamos pasar una imagen y nos devuelva las características de Gabor o las de Gabor + Wavelet según corresponda.
+
+```{r}
+get_gabor_features <- function(image){
+  
+  ## Lo primero es definir los filtros y convolucionarlos con la imagen de entrada
+  gb_im = init_gb$gabor_feature_extraction(image = image, scales = 3, orientations = 6,
+                                          downsample_gabor = FALSE, downsample_rows = NULL,
+                                          downsample_cols = NULL, gabor_rows = 19, 
+                                          gabor_columns = 19, plot_data = TRUE, 
+                                          normalize_features = FALSE, threads = 6)
+  
+  ## Luego hacemos el array-truco para que se nos quede todo con unas dimensiones agradables de manejar
+  cuac_real <- array(as.numeric(unlist(gb_im$gabor_features_real)), dim=c(50, 203, 18))
+  cuac_imaginary <- array(as.numeric(unlist(gb_im$gabor_features_imaginary)), dim=c(50, 203, 18))
+  
+  ## Definimos el array complejo para calcular fácilmente las features luego
+  cuac_complex <- array(complex(real = cuac_real, imaginary = cuac_imaginary), dim=c(50,203,18))
+  
+  ## Calculamos los array de amplitud y fase
+  amps <- Mod(cuac_complex)
+  phases <- Arg(cuac_complex)
+  
+  ## Ahora ya podemos calcular las características
+  amps_mean_vec <- apply(amps, mean, MARGIN = 3)
+  amps_sd_vec <- apply(amps, sd, MARGIN = 3)
+  phases_mean_vec <- apply(phases, mean, MARGIN = 3)
+  phases_sd_vec <- apply(phases, sd, MARGIN = 3)
+  
+  ## Finalmente las concatenamos todas juntas para tener un vector final de características
+  total_feature_vector <- c(amps_mean_vec, amps_sd_vec, phases_mean_vec, phases_sd_vec)
+  
+  return(total_feature_vector)
+}
+```
+
+```{r}
+get_gabor_wavelet_features <- function(image){
+  
+  ## Lo primero es definir los filtros y convolucionarlos con la imagen de entrada
+  gb_im = init_gb$gabor_feature_extraction(image = image, scales = 3, orientations = 6,
+                                          downsample_gabor = FALSE, downsample_rows = NULL,
+                                          downsample_cols = NULL, gabor_rows = 19, 
+                                          gabor_columns = 19, plot_data = TRUE, 
+                                          normalize_features = FALSE, threads = 6)
+  
+  ## Luego hacemos el array-truco para que se nos quede todo con unas dimensiones agradables de manejar
+  cuac_real <- array(as.numeric(unlist(gb_im$gabor_features_real)), dim=c(50, 203, 18))
+  
+  ## Ahora hacemos las medias y desviaciones de cada canal
+  patata <- apply(cuac_real, dwt.2d, wf = 'd4', J = 1, MARGIN = 3)
+  
+  ## Como lo de arriba nos devuelve una lista de listas de cuatro cosas, etc.
+  ## Lo más agradable es volver a ponerlo como un array de las dimensiones que toca.
+  patata2 <- array(as.numeric(unlist(patata)), dim=c(25, 101, 4*18))
+  
+  ## Ahora ya se puede calcular fácilmente la desviación estándar por canal igual que hacíamos antes
+  sds_wavelets <- apply(patata2, FUN = sd, MARGIN = 3)
+  
+  return(sds_wavelets)
+}
+```
+
+```{r}
+p.features.gabor <- get_gabor_features(t(talks@.Data))
+p.fetures.gabor.wavelet <- get_gabor_wavelet_features(t(talks@.Data))
+
+str(p.features.gabor)
+str(p.fetures.gabor.wavelet)
+```
+
+# Aplicarlo sobre todo el conjunto del MNIST
+
+Ahora que parece que tenemos dos funciones que nos sacan los dos tipos de características vamos a intentar aplicarlo para sacar todas las características del conjunto de imágenes MNIST.
+
+```{r}
+library(mnist)
+data(mnist)
+```
+
+Como tarda mucho, vamos a coger unos 1000 ejemplos de train y 250 de test para probar.
+
+```{r}
+train_size <- 10000
+test_size <- 1000
+
+mnist.train.images <- array(unlist(mnist$train$x), dim = c(10000,28,28))
+mnist.test.images <- array(unlist(mnist$test$x), dim = c(10000,28,28))
+
+# time_i <- Sys.time()
+mnist.train.gabor.features <- apply(mnist.train.images[1:train_size,,], get_gabor_features, MARGIN = 1)
+mnist.test.gabor.features <- apply(mnist.test.images[1:test_size,,], get_gabor_features, MARGIN = 1)
+# print(Sys.time() - time_i)
+
+## Por las dimensiones parece que hace falta trasponerlas para que tengan la típica
+## forma de [ejemlpos, features]
+mnist.train.gabor.features <- t(mnist.train.gabor.features)
+mnist.test.gabor.features <- t(mnist.test.gabor.features)
+```
+
+# Random Forest
+
+Ahora lo metemos todo dentro de un precioso Random Forest y a rezar.
+
+```{r}
+library(randomForest)
+```
+
+```{r}
+randomForest(x = mnist.train.gabor.features, y = factor(mnist$train$y[1:train_size]), 
+             xtest = mnist.test.gabor.features, ytest = factor(mnist$test$y[1:test_size]))
+```
 
