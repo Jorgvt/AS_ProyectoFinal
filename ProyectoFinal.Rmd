@@ -1,0 +1,342 @@
+---
+title: "Extracción de características para el reconocimiento de texto manuscrito"
+subtitle: "Análisis de Señales"
+author: "Enrique y Jorge Vila Tomás"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    number_sections: yes
+  pdf_document:
+    number_sections: yes
+header-includes:
+  - \usepackage[explicit]{titlesec}
+  - \titleformat{\section}{\normalfont\Large\bfseries}{}{0em}{\thesection. {#1}\ }
+subparagraph: yes
+---
+
+```{css, echo=FALSE}
+.header-section-number::after {
+  content: ".";
+}
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r include=FALSE}
+# Especificamos las librerías necesarias en esta lista
+
+packages = c("knitr", "OpenImageR", "EBImage", "mnist", "waveslim", "randomForest")
+
+#use this function to check if each package is on the local machine
+#if a package is installed, it will be loaded
+#if any are not, the missing package(s) will be installed and loaded
+package.check <- lapply(packages, FUN = function(x) {
+  if (!require(x, character.only = TRUE)) {
+    install.packages(x, dependencies = TRUE)
+    library(x, character.only = TRUE)
+  }
+})
+
+#verify they are loaded
+search()
+
+```
+
+# Objetivos
+
+El objetivo de este trabajo es explorar diferentes técnicas que permitan extraer distintas características de imágenes que permitan la clasificación de texto manuscrito.
+
+# Materiales y métodos
+
+Este estudio se compone de dos partes principales: primero exploraremos diferentes técnicas de preprocesado y extracción de características sobre algunas imágenes de texto manuscrito extraídas del conjunto de datos IAM-OnDB, que contiene texto manuscrito en inglés. Más tarde aplicaremos estas técnicas para resolver un ejercicio de clasificación multi-clase sobre el conjunto de datos MNIST, que contiene números del cero al nueve escritos a mano. Mediante este enfoque queremos ilustrar primero cómo se pueden utilizar estas técnicas y luego utilizarlas para demostrar su aplicabilidad.
+
+Podemos ver un ejemplo del conjunto IAM-OnDB y otra del MNIST a continuación:
+
+```{r}
+data(mnist)
+mnist.train.images <- array(unlist(mnist$train$x), dim = c(60000,28,28))
+mnist.test.images <- array(unlist(mnist$test$x), dim = c(10000,28,28))
+```
+
+```{r}
+talks <- readImage("talks.png")
+
+# pdf(file = "Images/talks.pdf")
+plot(talks)
+title(main = "Talks (IAM-OnDB")
+# dev.off()
+# pdf(file = "Images/2-MNIST.pdf")
+image(mnist.train.images[1,,], main = "2 (MNIST)")
+# dev.off()
+```
+
+# Preprocesado de los datos
+
+Antes de entrar de lleno en la extracción de características es conveniente realizar un pre-procesado de las imágenes para obtener imágenes lo más limpias posibles que nos proporcionen la mayor cantidad de información útil. Para conseguir una imagen lo más nítida posible también utilizaremos un filtrado de mediana, que sirve para eliminar los picos y pequeños artefactos en la propia escritura que no son relevantes. Además, al trabajar con texto manuscrito lo normal es trabajar con imágenes en dos colores: blanco para el fondo y negro para el texto. Esto nos da pie a aplicar una binarización de la imagen que no es más que establecer un umbral a partir del cual diremos que un píxel tiene un valor de uno si está por encima o cero si está por debajo. Resulta muy útil porque al reconocer texto no nos importa cómo de fuerte está el trazado de la letra o el color con el que se ha escrito, solamente nos interesa ser capaces de ver el trazo nítidamente.
+
+## Filtrado de mediana
+
+La idea del filtrado de media es sustituir el valor de cada píxel por al mediana de los píxeles vecinos. De esta forma se puede eliminar el ruido de una imagen sin perder la definición de los bordes. La cantidad de vecinos que se tienen en cuenta para el cálculo se conoce como *ventana*. Utilizando una ventana de tamaño 3 obtenemos la siguiente imagen. Se puede como la nueva imagen tiene muchos menos picos y es, en general, menos ruidosa.
+
+```{r}
+talks.median <- medianFilter(talks, size=3)
+plot(talks.median)
+```
+
+## Binarización
+
+El proceso de binarización es sencillo, aunque elegir un valor adecuado para el umbral no es siempre algo trivial. Para simplificar el proceso, Nobuyuki Otsu desarrolló un método que recibe su nombre (método de Otsu), y que determina el umbral óptimo minimizando la varianza intra clases, que se define como la suma pesada de las varianzas de las dos clases: $\sigma_{w}^{2} = w_{0}(t)\sigma_{0}^{2} + w_{1}(t)\sigma_{1}^{2}$.
+
+```{r}
+threshold <- otsu(talks.median)
+talks.otsu <- talks.median
+talks.otsu@.Data <- as.matrix(talks.median@.Data >= threshold)
+```
+
+Si aplicamos el método a la imagen anterior obtenemos un threshold de `r threshold`, que nos permite obtener la imagen binarizada:
+
+```{r}
+plot(talks.otsu)
+```
+
+# Extracción de características
+
+Una vez hemos aplicado las técnicas de pre-procesado ya podemos pasar a realizar la extración de características. Plantearemos dos ténicas diferentes: utilizando la transformada de Gabor y la transformada wavelet discreta.
+
+## Transformada de Gabor
+
+La transformada de Gabor consiste en definir primero unos determinados filtros que luego se convolucionarán con la imagen de la cual queremos extraer las características. Estos filtros se definen para capturar diferentes particularidades de las imágenes como linear verticales, diagonales u horizontales. Algo a tener en cuenta a la hora de definirlos son sus dimensiones, ya que estas dependenden del tamaño de las imágenes con las que los queramos convolucionar. Un tamaño muy pequeño respecto a la imagen imposibilitará capturar las características más generales mientras que un tamaño demasiado grande omitirá los detalles. En este trabajo hemos probado diferentes tamaños y nos hemos quedado con el que proporcionaba los resultados más interesantes.
+
+A continuación se muestra la parte real de los filtros que vamos a utilizar. Como se puede ver, conforme nos desplazamos dentro de una columna podemos ver que cambia la frecuencia de los filtros, mientras que al desplazarnos en una fila cambiamos la orientación del filtro. Al trabajar con texto manuscrito es importante contar con filtros con muchas orientaciones diferentes, ya que hay muchas letras distintas y cada persona las escribe de manera diferente.
+
+```{r}
+init_gb = GaborFeatureExtract$new()
+
+gb_f = init_gb$gabor_filter_bank(scales = 3, orientations = 6, gabor_rows = 19,
+                                 gabor_columns = 19, plot_data = TRUE)
+
+plt_f = init_gb$plot_gabor(real_matrices = gb_f$gabor_real, margin_btw_plots = 0.65,
+                           thresholding = FALSE)
+```
+
+Podemos ver el resultado de convolucionar cada uno de estos filtros con nuestra imagen (la parte real). Dado que puede aparecer ruido después de hacer la convolución, puede ser útil binarizar el resultado para obtener imágenes más claras. Esto se ve claramente en las siguientes figuras.
+
+```{r}
+gb_im = init_gb$gabor_feature_extraction(image = t(talks.otsu@.Data), scales = 3, orientations = 6,
+                                         downsample_gabor = FALSE, downsample_rows = NULL,
+                                          downsample_cols = NULL, gabor_rows = 19, 
+                                          gabor_columns = 19, plot_data = TRUE, 
+                                          normalize_features = FALSE, threads = 3)
+
+plt_im = init_gb$plot_gabor(real_matrices = gb_im$gabor_features_real,
+                            margin_btw_plots = 0.65, thresholding = FALSE)
+
+plt_im_thresh = init_gb$plot_gabor(real_matrices = gb_im$gabor_features_real,
+                                   margin_btw_plots = 0.65, thresholding = TRUE)
+```
+
+Una vez hemos obtenido las imágenes convolucionadas podemos extraer de ellas una gran cantidad de características diferentes. Hay que tener en cuenta que este resultado tiene tanto una parte real como una parte imáginaria. Basándonos en [citar cosa], calcularemos la media de la amplitud de cada imagen y su desviación estándar, y la media y la desviación estándar de las fases. De esta forma obtenemos 72 características diferentes para cada imagen de entrada.
+
+```{r}
+gabor_real <- array(as.numeric(unlist(gb_im$gabor_features_real)), dim=c(50, 203, 18))
+gabor_imaginary <- array(as.numeric(unlist(gb_im$gabor_features_imaginary)), dim=c(50, 203, 18))
+gabor_complex <- array(complex(real = gabor_real, imaginary = gabor_imaginary), dim=c(50,203,18))
+amps <- Mod(gabor_complex)
+phases <- Arg(gabor_complex)
+
+## Ahora hacemos las medias y desviaciones de cada canal
+amps_mean_vec <- apply(amps, mean, MARGIN = 3)
+amps_sd_vec <- apply(amps, sd, MARGIN = 3)
+phases_mean_vec <- apply(phases, mean, MARGIN = 3)
+phases_sd_vec <- apply(phases, sd, MARGIN = 3)
+
+total_feature_vector <- c(amps_mean_vec, amps_sd_vec, phases_mean_vec, phases_sd_vec)
+```
+
+Una forma de representar estos vectores multidimensionales, aunque no muy práctica, es representarlos como diagramas de barras. Aún así hay que tener en cuenta que interpretarlos empieza a ser complicado, así que los mostramos simplemente por completitud:
+
+```{r}
+par(mfrow = c(2,2))
+
+barplot(amps_mean_vec, main = "Medias amplitudes")
+barplot(amps_sd_vec, main = "Desviacion Típica Amplitudes")
+barplot(phases_mean_vec, main = "Medias fases")
+barplot(phases_sd_vec, main = "Desviación Típica Fases")
+
+# barplot(total_feature_vector, main = "Todos los vectores juntos")
+```
+
+## Transformada de Gabor + Transformada Wavelet
+
+Intentando extraer todavía más información de cada imagen, en [citar] se propone aplicar una transformada discreta Wavelet sobre el resultado de las imágenes convolucionadas con los filtros de Gabor. De esta forma se pretende extraer la información más útil y evitar ruido e información innecesaria. Vamos a trabajar únicamente con la transformada Wavelet de primer nivel ($J = 1$) con filtro Daubechies-4. Este tipo de filtros forman una familia de wavelets ortogonales.
+
+Antes de nada podemos ver el resultado de aplicar la Transformada Wavelet Discreta sobre la imágen `talks` con la que estábamos trabajando antes:
+
+```{r}
+p <- dwt.2d(flipImage(talks.otsu@.Data, mode = 'horizontal'), 'd4', J=1)
+image(p$LH1, main = "LH")
+image(p$HH1, main = "HH")
+image(p$HL1, main = "HL")
+image(p$LL1, main = "LL")
+```
+
+El resultado de esta transformación son cuatro imágenes nuevas: tres de ellas representan los coeficientes de detalles horizontales, verticales y diagonales, y la cuarta representa los coeficientes de aproximaciones. Podemos ver que cada una de ellas logra captar unas características determinadas de las imágenes.
+
+Basándonos en estudios previos aplicamos esta transformación a cada una de las imágenes convolucionadas con los filtros de Gabor y obtenemos $4 \times 18 = 72$ imágenes nuevas, las cuales podemos transformar en características resúmen calculando la desviación estándar de cada una de ellas. De esta forma volvemos a obtener otras 72 características que podemos representar igual que en el apartado anterior.
+
+```{r}
+## Ahora hacemos las medias y desviaciones de cada canal
+gabor_real_wavelet <- apply(gabor_real, dwt.2d, wf = 'd4', J = 1, MARGIN = 3)
+
+## Como lo de arriba nos devuelve una lista de listas de cuatro cosas, etc.
+## Lo más agradable es volver a ponerlo como un array de las dimensiones que toca.
+gabor_real_wavelet2 <- array(as.numeric(unlist(gabor_real_wavelet)), dim=c(25, 101, 4*18))
+
+## Ahora ya se puede calcular fácilmente la desviación estándar por canal igual que hacíamos antes
+sds_wavelets <- apply(gabor_real_wavelet2, FUN = sd, MARGIN = 3)
+
+## Lo podemos pintar también si nos hace ilusión
+barplot(sds_wavelets, main = "Desviación Estándar por canal (Gabor + Wavelet)")
+```
+
+# Aplicación al dataset MNIST
+
+Una vez se han visto las diferentes herramientas de extracción de pre-procesado y extracción de características que queremos utilizar, podemos pasar a aplicarlo sobre el conjunto de datos MNIST. El experimento consistirá en utilizar los dos métodos para obtener las características de cada imagen y utilizarlas después para entrenar un Random Forest para clasificar los dígitos escritos a mano. Terminaremos el trabajo comparando los resultados que obtienen los dos métodos.
+
+```{r}
+get_gabor_features <- function(image, median_filter = FALSE, binarize = FALSE, scales = 3, orientations = 6){
+    
+  ## Aplicamos el filtro de mediana a la imagen en función del parámetro median_filter
+  if (median_filter){
+    image <- medianFilter(image, size=3) 
+  }
+  
+  ## Binarizamos la imagen en función del parámetro binarize
+  if (binarize){
+    image <- 1*(image > otsu(image))  
+  }
+  
+  ## Lo primero es definir los filtros y convolucionarlos con la imagen de entrada
+  init_gb = GaborFeatureExtract$new()
+  gb_im = init_gb$gabor_feature_extraction(image = image, scales = scales, orientations = orientations,
+                                          downsample_gabor = FALSE, downsample_rows = NULL,
+                                          downsample_cols = NULL, gabor_rows = 19, 
+                                          gabor_columns = 19, plot_data = TRUE, 
+                                          normalize_features = FALSE, threads = 8)
+  
+  ## Luego hacemos el array-truco para que se nos quede todo con unas dimensiones agradables de manejar
+  gabor_real <- array(as.numeric(unlist(gb_im$gabor_features_real)), dim=c(50, 203, 18))
+  gabor_imaginary <- array(as.numeric(unlist(gb_im$gabor_features_imaginary)), dim=c(50, 203, 18))
+  
+  ## Definimos el array complejo para calcular fácilmente las features luego
+  gabor_complex <- array(complex(real = gabor_real, imaginary = gabor_imaginary), dim=c(50,203,18))
+  
+  ## Calculamos los array de amplitud y fase
+  amps <- Mod(gabor_complex)
+  phases <- Arg(gabor_complex)
+  
+  ## Ahora ya podemos calcular las características
+  amps_mean_vec <- apply(amps, mean, MARGIN = 3)
+  amps_sd_vec <- apply(amps, sd, MARGIN = 3)
+  phases_mean_vec <- apply(phases, mean, MARGIN = 3)
+  phases_sd_vec <- apply(phases, sd, MARGIN = 3)
+  
+  ## Finalmente las concatenamos todas juntas para tener un vector final de características
+  total_feature_vector <- c(amps_mean_vec, amps_sd_vec, phases_mean_vec, phases_sd_vec)
+  
+  return(total_feature_vector)
+}
+```
+
+```{r}
+get_gabor_wavelet_features <- function(image, median_filter = FALSE, binarize = FALSE, scales = 3, orientations = 6){
+    
+  ## Aplicamos el filtro de mediana a la imagen en función del parámetro median_filter
+  if (median_filter){
+    image <- medianFilter(image, size=3) 
+  }
+  
+  ## Binarizamos la imagen en función del parámetro binarize
+  if (binarize){
+    image <- 1*(image > otsu(image))  
+  }
+  
+  ## Lo primero es definir los filtros y convolucionarlos con la imagen de entrada
+  init_gb = GaborFeatureExtract$new()
+  gb_im = init_gb$gabor_feature_extraction(image = image, scales = scales, orientations = orientations,
+                                          downsample_gabor = FALSE, downsample_rows = NULL,
+                                          downsample_cols = NULL, gabor_rows = 19, 
+                                          gabor_columns = 19, plot_data = TRUE, 
+                                          normalize_features = FALSE, threads = 8)
+  
+  ## Luego hacemos el array-truco para que se nos quede todo con unas dimensiones agradables de manejar
+  gabor_real <- array(as.numeric(unlist(gb_im$gabor_features_real)), dim=c(50, 203, 18))
+  
+  ## Ahora hacemos las medias y desviaciones de cada canal
+  gabor_real_wavelet <- apply(gabor_real, dwt.2d, wf = 'd4', J = 1, MARGIN = 3)
+  
+  ## Como lo de arriba nos devuelve una lista de listas de cuatro cosas, etc.
+  ## Lo más agradable es volver a ponerlo como un array de las dimensiones que toca.
+  gabor_real_wavelet2 <- array(as.numeric(unlist(gabor_real_wavelet)), dim=c(25, 101, 4*18))
+  
+  ## Ahora ya se puede calcular fácilmente la desviación estándar por canal igual que hacíamos antes
+  sds_wavelets <- apply(gabor_real_wavelet2, FUN = sd, MARGIN = 3)
+  
+  return(sds_wavelets)
+}
+```
+
+```{r}
+train_size <- 500
+test_size <- 150
+
+binarize <- FALSE
+median_filter <- FALSE
+
+## Obtenemos las características de Gabor
+train.gabor <- apply(mnist.train.images[1:train_size,,], MARGIN = 1, FUN = get_gabor_features, 
+                     binarize = binarize, median_filter = median_filter)
+test.gabor <- apply(mnist.test.images[1:test_size,,], MARGIN = 1, FUN = get_gabor_features, 
+                     binarize = binarize, median_filter = median_filter)
+
+## Obtenemos las características de Gabor + Wavelet
+train.gabor.wav <- apply(mnist.train.images[1:train_size,,], MARGIN = 1, FUN = get_gabor_wavelet_features, 
+                         binarize = binarize, median_filter = median_filter)
+test.gabor.wav <- apply(mnist.test.images[1:test_size,,], MARGIN = 1, FUN = get_gabor_wavelet_features, 
+                        binarize = binarize, median_filter = median_filter)
+
+## Por las dimensiones parece que hace falta trasponerlas para que tengan la típica
+## forma de [ejemplos, features]
+train.gabor <- t(train.gabor)
+test.gabor <- t(test.gabor)
+
+train.gabor.wav <- t(train.gabor.wav)
+test.gabor.wav <- t(test.gabor.wav)
+```
+
+```{r}
+set.seed(42)
+rf.gabor <- randomForest(x = train.gabor, y = factor(mnist$train$y[1:train_size]), 
+                         xtest = test.gabor, ytest = factor(mnist$test$y[1:test_size]))
+
+set.seed(42)
+rf.gabor.wav <- randomForest(x = train.gabor.wav, y = factor(mnist$train$y[1:train_size]), 
+                             xtest = test.gabor.wav, ytest = factor(mnist$test$y[1:test_size]))
+```
+
+Podemos comprobar, junto con sus diferentes matrices de confusión, los resultados que se obtienen:
+
+- Gabor: [Entrenamiento] `r mean(rf.gabor$err.rate[500,1])` | [Test] `r mean(rf.gabor$test$err.rate[500,1])`
+- Gabor + Wavelet: [Entrenamiento] `r mean(rf.gabor.wav$err.rate[500,1])` | [Test] `r mean(rf.gabor.wav$test$err.rate[500,1])`
+
+```{r}
+mean(rf.gabor$err.rate[500,1])
+mean(rf.gabor$test$err.rate[500,1])
+
+mean(rf.gabor.wav$err.rate[500,1])
+mean(rf.gabor.wav$test$err.rate[500,1])
+```
+
+Los resultados que obtenemos son curiosos ya que, aunque utilizando únicamente las características de Gabor obtenemos mejor precisión en el conjunto de entrenamiento, al añadir la transformada Wavelet se obtiene la misma precisión en el conjunto de test pero con menos overfit.
